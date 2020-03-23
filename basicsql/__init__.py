@@ -6,104 +6,99 @@ import datetime
 
 import sqlalchemy
 from sqlalchemy.orm import Session
-import cx_Oracle
-import dpath.util
+
 import pandas as pd
 import numpy as np
+from jinjasql import JinjaSql
 
 
 class Connection(object):
-    def __init__(
-        self, connectionDetails, conDetailsDictPath=None, serverWarnings=False
-    ):
+    def __init__(self, conn_details, server_warnings=False):
         """ Creates a connection to a sql database using SQLAlchemy session
 
         Currently supports MySQL,  PostgreSQL, SQL Server (MSSQL), and Oracle.
 
         Args:
-            connectionDetails (dict or string): Holds the connection details and can be a dictionary or path to json file
-            conDetailsDictPath (string): Defaults to None. Can be used to define the path in the file to the database 
-                connection details. The path must be described via /slashed/path ala xpath. The library used is dpath.
-                Required when using a file and if the file contains more than just the database connection details.
-            serverWarnings (boolean): Defaults to False. Server warnings will be displayed when set to True.
+            conn_details (dict): Dictionary with the connection details. E.g.
+                                       {"server_type": "mssql",
+                                        "ip": "127.0.0.1",
+                                        "db": "my_db",
+                                        "user": "user",
+                                        "pw": "password"}
+            server_warnings (boolean): Defaults to False. Server warnings will be displayed when set to True. Has not been implemented!
         
         Returns:
             No value
         """
 
-        self.conDetailsDictPath = conDetailsDictPath
-        self.connectionDetails = connectionDetails
-
-        self.validateConnectionDetails()
-
-        self.connectionDetails["db"] = self.connectionDetails.get("db", "")
+        conn_details["db"] = conn_details.get("db", "")
+        conn_details["connect_args"] = conn_details.get("connect_args", None)
 
         # MySQL
-        if self.connectionDetails["serverType"] == "mysql":
+        if conn_details["server_type"] == "mysql":
 
-            self.connectionDetails["port"] = self.connectionDetails.get("port", 3306)
+            conn_details["port"] = conn_details.get("port", 3306)
 
-            connectionString = "mysql+pymysql://{user}:{pw}@{ip}:{port}/{db}".format(
-                **self.connectionDetails
+            conn_string = "mysql+pymysql://{user}:{pw}@{ip}:{port}/{db}".format(
+                **conn_details
             )
 
-            self.serverType = "mysql"
+            self.server_type = "mysql"
 
         # PostgreSQL
-        elif self.connectionDetails["serverType"] in ["postgresql", "postgres"]:
+        elif conn_details["server_type"] in ["postgresql", "postgres"]:
 
-            self.connectionDetails["port"] = self.connectionDetails.get("port", 5432)
+            conn_details["port"] = conn_details.get("port", 5432)
 
-            connectionString = "postgresql+psycopg2://{user}:{pw}@{ip}:{port}/{db}".format(
-                **self.connectionDetails
+            conn_string = "postgresql+psycopg2://{user}:{pw}@{ip}:{port}/{db}".format(
+                **conn_details
             )
 
-            self.serverType = "postgresql"
+            self.server_type = "postgresql"
 
         # MSSQL
-        elif self.connectionDetails["serverType"] == "mssql":
+        elif conn_details["server_type"] == "mssql":
 
-            self.connectionDetails["port"] = self.connectionDetails.get("port", 1433)
-            self.connectionDetails["odbcDriver"] = self.connectionDetails.get(
+            conn_details["port"] = conn_details.get("port", 1433)
+            conn_details["odbcDriver"] = conn_details.get(
                 "odbcDriver", "{ODBC Driver 17 for SQL Server}"
             )
 
-            connectionParameters = urllib.parse.quote_plus(
+            conn_string = "mssql+pyodbc:///?odbc_connect=" + urllib.parse.quote_plus(
                 "DRIVER={odbcDriver};SERVER={ip};DATABASE={db};UID={user};PWD={pw};PORT={port}".format(
-                    **self.connectionDetails
+                    **conn_details
                 )
             )
 
-            connectionString = "mssql+pyodbc:///?odbc_connect={}".format(
-                connectionParameters
-            )
-
-            self.serverType = "mssql"
+            self.server_type = "mssql"
 
         # Oracle
-        elif self.connectionDetails["serverType"] == "oracle":
+        elif conn_details["server_type"] == "oracle":
 
-            self.connectionDetails["port"] = self.connectionDetails.get("port", 1521)
-            self.connectionDetails["dsn"] = cx_Oracle.makedsn(
-                self.connectionDetails["ip"],
-                self.connectionDetails["port"],
-                service_name=self.connectionDetails["service"],
+            conn_details["port"] = conn_details.get("port", 1521)
+            dsn_string = "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={ip})(PORT={port}))(CONNECT_DATA=(SERVICE_NAME={service})))".format(
+                **conn_details
             )
+            conn_details["dsn"] = dsn_string
 
-            connectionString = "oracle://{user}:{pw}@{dsn}".format(
-                **self.connectionDetails
-            )
+            conn_string = "oracle://{user}:{pw}@{dsn}".format(**conn_details)
 
-            self.serverType = "oracle"
+            self.server_type = "oracle"
 
         else:
             raise Exception(
-                "The serverType '{serverType}' is not supported".format(
-                    **self.connectionDetails
+                "The server_type '{server_type}' is not supported".format(
+                    **conn_details
                 )
             )
 
-        engine = sqlalchemy.create_engine(connectionString)
+        if conn_details["connect_args"]:
+            engine = sqlalchemy.create_engine(
+                conn_string, connect_args=conn_details["connect_args"]
+            )
+        else:
+            engine = sqlalchemy.create_engine(conn_string)
+
         self.session = sqlalchemy.orm.session.Session(bind=engine)
         self.metadata = sqlalchemy.MetaData(bind=engine)
 
@@ -113,69 +108,6 @@ class Connection(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def validateConnectionDetails(self):
-        """Get connection details and perform basic validation
-
-        If a file path was provided, loads the connection details from file into a dictionary.
-        Checks that the minimum connection parameters are provided in the dictionary.
-        The following parameters are cosidered minimum: serverType, user, pw, and ip.
-        Connection parameters that are specific to a server type are not checked.
-        
-        Args:
-            No Args
-
-        Returns:
-            No value
-        """
-
-        if isinstance(self.connectionDetails, str):
-            # If connectionDetails is a string it is assumed that is a filepath which is used to load the connection details.
-
-            connectionDetailsFilePath = self.connectionDetails
-
-            if os.path.isfile(self.connectionDetails):
-
-                filename, filetype = os.path.splitext(connectionDetailsFilePath)
-
-                if filetype == ".json":
-
-                    with open(connectionDetailsFilePath) as f:
-                        self.connectionDetails = json.load(f)
-                else:
-                    raise Exception(
-                        "The connection details filetype '{}' is not supported".format(
-                            filetype
-                        )
-                    )
-            else:
-                raise Exception(
-                    "The connection details file specified does not exist ({})".format(
-                        connectionDetailsFilePath
-                    )
-                )
-
-        elif isinstance(self.connectionDetails, dict):
-            pass
-        else:
-            raise Exception(
-                "The variable connectionDetails has to be a dictionary or file path but the variable provided is of type {}".format(
-                    type(self.connectionDetails)
-                )
-            )
-
-        if self.conDetailsDictPath is not None:
-            self.connectionDetails = dpath.util.get(
-                self.connectionDetails, self.conDetailsDictPath
-            )
-
-        # Check that the minimum connection parameters are provided
-        requiredConnectionValues = ["serverType", "user", "pw", "ip"]
-        for v in requiredConnectionValues:
-            if v not in self.connectionDetails:
-                raise Exception(
-                    "No value for key '{}' provided in connection details".format(v)
-                )
-
     def close(self):
         self.session.close()
 
@@ -183,103 +115,155 @@ class Connection(object):
         self.session.commit()
 
     def now(self):
-        return datetime.datetime.now()
+        # gets current datetime from db server
+        return self.session.query(sqlalchemy.sql.func.now()).first()[0]
 
     def query(
         self,
-        queryStr,
+        query,
         commit=False,
-        returnType="list",
-        queryType=None,
-        insertIdField=None,
+        return_type="lists",
+        query_type=None,
+        insert_id_field=None,
     ):
         """Execute raw sql query 
         
         Args:
-            queryStr (str):
+            query (str): The SQL query that will be executed
             commit (boolean): Defaults to False. If set to True will use commit command after executing the query.
-            returnType (str): Defaults to the value 'list'. Other possible values are 'df' (dataframe) or 'listOfDicts'.
-            queryType (str): Defaults to None. Used to set the query type. Valid values are 'insert', 'update', and 'select'.
-            insertIdField (str): Defaults to None. Needs to be provided for insert statements for Oracle and PostgreSQL if
+            return_type (str): Defaults to the value 'lists' (list of lists). Other possible values are 'df' (pandas dataframe) or 'dicts' (list of dictionaries).
+            query_type (str): Defaults to None. Used to set the query type. Valid values are 'insert', 'update', and 'select'.
+            insert_id_field (str): Defaults to None. Needs to be provided for insert statements for Oracle and PostgreSQL if
                 returning the last inserted id is required (will return None if not provided).
 
         Returns:
-            rows (select) or lastRowId (insert): If the query type is select (SQLAlchemy returns rows) a dataframe, list of lists or 
-                list of dicts is returned depending on the specified returnType. If the queryType is insert and the database supports 
+            rows (select) or last_insert_id (insert): If the query type is select (SQLAlchemy returns rows) a dataframe, list of lists or 
+                list of dicts is returned depending on the specified return_type. If the query_type is insert and the database supports 
                 the functionallity to return the last inserted id the system will return the id. If neither of these cases is matched
                 None is returned.
         """
 
-        # If queryType is not provided determine it based on the first word of the query (works for update, insert, select)
-        if queryType is None:
+        # Check if return_type is valid
+        valid_return_types = ["lists", "df", "dicts"]
+        if return_type not in valid_return_types:
+            raise Exception(
+                "'{}' is an invalid value for the variable return_type.".format(
+                    return_type
+                )
+            )
+
+        # If query_type is not provided determine it based on the first word of the query (works for update, insert, select)
+        if query_type is None:
             try:
-                queryType = re.split(" |\n", queryStr, 1)[0].lower()
-                if queryType not in ("select", "insert", "update"):
-                    queryType = None
+                query_type = re.split(" |\n", query, 1)[0].lower()
+                if query_type not in ("select", "insert", "update"):
+                    query_type = None
             except:
-                queryType = None
+                query_type = None
 
         # Inserts for PostgreSQL and Oracle require a modification to the query to retrief the inserted id (todo Oracle)
         if (
-            queryType == "insert"
-            and self.serverType in ("postgresql", "oracle")
-            and insertIdField
+            query_type == "insert"
+            and self.server_type in ("postgresql", "oracle")
+            and insert_id_field
         ):
-            if self.serverType == "postgresql":
-                queryStr += ' returning "{}"'.format(insertIdField)
+            if self.server_type == "postgresql":
+                query += ' returning "{}"'.format(insert_id_field)
 
-        result = self.session.execute(queryStr)
+        result = self.session.execute(query)
 
         if commit:
             self.commit()
 
-        if queryType == "insert":
+        if query_type == "insert":
 
-            if self.serverType == "mysql":
-                lastRowId = result.lastrowid
+            if self.server_type == "mysql":
+                last_insert_id = result.lastrowid
 
-            elif self.serverType == "mssql":
-                lastRowId = self.session.execute("select scope_identity()").fetchone()[
-                    0
-                ]
+            elif self.server_type == "mssql":
+                last_insert_id = self.session.execute(
+                    "select scope_identity()"
+                ).fetchone()[0]
 
-            elif self.serverType in ("postgresql"):  # still to do for 'oracle'
-                lastRowId = result.fetchone()[0]
+            elif self.server_type in ("postgresql"):  # still to do for 'oracle'
+                last_insert_id = result.fetchone()[0]
 
             else:
-                lastRowId = None
+                last_insert_id = None
 
-            return lastRowId
+            return last_insert_id
 
         elif result.returns_rows:
             rows = result.fetchall()
             columns = result.keys()
 
-            if returnType == "list":
-
-                return rows
-
-            elif returnType == "df":
-
+            # Convert rows to desired type
+            if return_type == "df":
                 rows = pd.DataFrame(rows, columns=columns)
-                return rows
 
-            elif returnType == "listOfDicts":
+            elif return_type == "dicts":
+                rows = convert_to_dicts({"columns": columns, "rows": rows})
 
-                rows = convertToListOfDicts({"columns": columns, "rows": rows})
-                return rows
-
-            else:
-                raise Exception(
-                    "'{}' is an invalid value for the variable returnType.".format(
-                        returnType
-                    )
-                )
+            return rows
 
         else:
             return None
 
-    def select(self, table, columns, filters={}, returnType="list"):
+    def jinja_query(self, query_template, parameters):
+        """Execute SQL statement using jinja template and parameters (no data is returned)
+
+        Args:
+            query_template (str): SQL query with jinja
+            parameters (dict): Dictionary of parameters used in query
+
+        Returns:
+            No values
+        """
+
+        jsql = JinjaSql(param_style="named")
+
+        query, bind_parameters = jsql.prepare_query(query_template, parameters)
+
+        self.session.execute(query, bind_parameters)
+
+    def jinja_select(self, query_template, parameters, return_type="lists"):
+        """Select statement using jinja template and parameters
+
+        Args:
+            query_template (str): SQL query with jinja
+            parameters (dict): Dictionary of parameters used in query
+            return_type (str): Defaults to the value 'lists' (list of lists). Other possible values are 'df' (pandas dataframe) or 'dicts' (list of dictionaries).
+
+        Returns:
+            rows (list of lists, pandas dataframe or list of dictionaries): Records returned by the query.
+        """
+        # Check if return_type is valid
+        valid_return_types = ["lists", "df", "dicts"]
+        if return_type not in valid_return_types:
+            raise Exception(
+                "'{}' is an invalid value for the variable return_type.".format(
+                    return_type
+                )
+            )
+
+        jsql = JinjaSql(param_style="named")
+
+        query, bind_parameters = jsql.prepare_query(query_template, parameters)
+
+        result = self.session.execute(query, bind_parameters)
+        rows = result.fetchall()
+        columns = result.keys()
+
+        # Convert rows to desired type
+        if return_type == "df":
+            rows = pd.DataFrame(rows, columns=columns)
+
+        elif return_type == "dicts":
+            rows = convert_to_dicts({"columns": columns, "rows": rows})
+
+        return rows
+
+    def select(self, table, columns, filters={}, return_type="lists"):
         """Select statement
         
         Args:
@@ -287,11 +271,20 @@ class Connection(object):
             columns (list): List of columns to select values for.
             filters (dict): The keys indicate which columns should be used for filtering and the associated values are
             used as filter criteria. E.g. {'job' : ['developer'], 'skill': ['python', 'pandas', 'sqlalchemy']}
-            returnType (str): Defaults to the value 'list'. Other possible values are 'df' (dataframe) or 'listOfDicts'.
+            return_type (str): Defaults to the value 'lists' (list of lists). Other possible values are 'df' (pandas dataframe) or 'dicts' (list of dictionaries).
             
         Returns:
-            rows (): Depending on the query type either a dataframe, list of lists or list of dict.
+            rows (list of lists, pandas dataframe or list of dictionaries): Records returned by the query.
         """
+
+        # Check if return_type is valid
+        valid_return_types = ["lists", "df", "dicts"]
+        if return_type not in valid_return_types:
+            raise Exception(
+                "'{}' is an invalid value for the variable return_type.".format(
+                    return_type
+                )
+            )
 
         for key, val in filters.items():
             if isinstance(val, list) is False:
@@ -307,32 +300,20 @@ class Connection(object):
             .all()
         )
 
-        if returnType == "list":
-
-            return rows
-
-        elif returnType == "df":
-
+        # Convert rows to desired type
+        if return_type == "df":
             rows = pd.DataFrame(rows, columns=columns)
-            return rows
 
-        elif returnType == "listOfDicts":
+        elif return_type == "dicts":
+            rows = convert_to_dicts({"columns": columns, "rows": rows})
 
-            rows = convertToListOfDicts({"columns": columns, "rows": rows})
-            return rows
+        return rows
 
-        else:
-            raise Exception(
-                "'{}' is an invalid value for the variable returnType.".format(
-                    returnType
-                )
-            )
-
-    def insert(self, table, data, staticValues=None):
+    def insert(self, table_name, data, static_values=None):
         """Used to insert records into table.
 
         Args:
-            table (str): The table to insert into.
+            table_name (str): The table to insert into.
             data (list, dict or df): List of records that will be inserted.
                 If a list is provided it needs to be a list of dictionaries (column names as keys). E.g. 
                 [{'id':'1','name':'frodo','occ':'none'}, {'id':'2','name':'aragon','occ':'king'}]
@@ -343,32 +324,32 @@ class Connection(object):
                 ----|--------|------ 
                 1   | frodo  | none 
                 2   | aragon | king
-            staticValues (dict): Defaults to None. This can be used to define values that are the same for each record.
+            static_values (dict): Defaults to None. This can be used to define values that are the same for each record.
                 The key has to match the column name and the value the desired record value. E.g. {'company_name' : 'Google'}
 
         Returns:
             No value
         """
 
-        insertData = convertToListOfDicts(data)
+        data = convert_to_dicts(data)
 
-        if staticValues:
-            extendListOfDicts(insertData, staticValues)
+        if static_values:
+            add_to_dicts(data, static_values)
 
-        insertTable = sqlalchemy.Table(table, self.metadata, autoload=True)
+        table = sqlalchemy.Table(table_name, self.metadata, autoload=True)
 
-        if self.serverType == "oracle":
-            self.session.execute(insertTable.insert(), insertData)
+        if self.server_type == "oracle":
+            self.session.execute(table.insert(), data)
         else:
-            self.session.execute(insertTable.insert().values(insertData))
+            self.session.execute(table.insert().values(data))
 
-    def update(self, table, data, setColumns, whereColumns, staticSetValues=None):
+    def update(self, table_name, data, columns, filter_columns, static_values=None):
         """Used to update records for one table.
 
-        When columns that are used in the where clause (whereColumns) are not indexed the update will take significantly longer.
+        When columns that are used in the where clause (filter_columns) are not indexed the update may take significantly longer.
 
         Args:
-            table (str): The table to update.
+            table_name (str): The table to update.
             data (list, dict or df): List of records that will be updated.
                 If a list is provided it needs to be a list of dictionaries (column names as keys). E.g. 
                 [{'id':'1','name':'frodo','occ':'none'}, {'id':'2','name':'aragon','occ':'king'}]
@@ -379,48 +360,48 @@ class Connection(object):
                 ----|--------|------ 
                 1   | frodo  | none 
                 2   | aragon | king
-            setColumns (list): List of columns that are updated (used in set part of SQL statement)
-            whereColumns (list): List of columns that are used to identify the records to update (used in where clause of SQL statement)
-            staticSetValues (dict): Defaults to None. This can be used to define values that are the same for each record.
+            columns (list): List of columns that are updated (used in set part of SQL statement)
+            filter_columns (list): List of columns that are used to identify the records to update (used in where clause of SQL statement)
+            static_values (dict): Defaults to None. This can be used to define values that are the same for each record.
                 The key has to match the column name and the value the desired record value. E.g. {'company_name' : 'Google'}
 
         Returns:
             No value
         """
 
-        updateData = convertToListOfDicts(data)
+        data = convert_to_dicts(data)
 
-        if staticSetValues:
-            extendListOfDicts(updateData, staticSetValues)
+        if static_values:
+            add_to_dicts(data, static_values)
 
-        updateData = sanitizeColumnNames(updateData, setColumns + whereColumns)
+        data = sanitize_column_names(data, columns + filter_columns)
 
-        updateTable = sqlalchemy.Table(table, self.metadata, autoload=True)
+        table = sqlalchemy.Table(table_name, self.metadata, autoload=True)
 
         # Solution from stackoverflow.com/questions/48096902
         stmt = (
-            updateTable.update()
+            table.update()
             .where(
                 sqlalchemy.and_(
                     *[
-                        updateTable.c[col] == sqlalchemy.bindparam("b_" + col)
-                        for col in whereColumns
+                        table.c[col] == sqlalchemy.bindparam("b_" + col)
+                        for col in filter_columns
                     ]
                 )
             )
-            .values({col: sqlalchemy.bindparam("b_" + col) for col in setColumns})
+            .values({col: sqlalchemy.bindparam("b_" + col) for col in columns})
         )
 
-        self.session.execute(stmt, updateData)
+        self.session.execute(stmt, data)
 
     def upsert(
         self,
-        table,
+        table_name,
         data,
-        keyColumns,
-        nonInsertColumns=None,
-        staticUpdateValues=None,
-        staticInsertValues=None,
+        key_columns,
+        ignore_columns=None,
+        static_update_vals=None,
+        static_insert_vals=None,
     ):
         """Used to upsert records for one table.
 
@@ -430,7 +411,7 @@ class Connection(object):
         When comparing the new data to the current data in the table the static values are not considered.
 
         Args:
-            table (str): The table to perform upsert on.
+            table_name (str): The name of the table to perform upsert on.
             data (list, dict or df): List of records that will be upserted (updated or insered).
                 If a list is provided it needs to be a list of dictionaries (column names as keys). E.g. 
                 [{'id':'1','name':'frodo','occ':'none'}, {'id':'2','name':'aragon','occ':'king'}]
@@ -441,41 +422,37 @@ class Connection(object):
                 ----|--------|------
                 1   | frodo  | none 
                 2   | aragon | king
-            keyColumns (list): List of columns that are used to uniquely identify a record for the upsert.
+            key_columns (list): List of columns that are used to uniquely identify a record for the upsert.
                 These columns don't have to be actual keys in the database.
-            nonInsertColumns (list): Defaults to None. List of columns that will not be inserted for new records.
-            staticUpdateValues (dict): Defaults to None. This can be used to define values that are the same for each record.
+            ignore_columns (list): Defaults to None. List of columns that will not be inserted for new records.
+            static_update_vals (dict): Defaults to None. This can be used to define values that are the same for each record.
                 The key has to match the column name and the value the desired record value. E.g. {'company_name' : 'Google'}
                 Will be used for any records that are being updated. Will not be considered when comparing current to new data.
-            staticInsertValues (dict): Defaults to None. This can be used to define values that are the same for each record.
+            static_insert_vals (dict): Defaults to None. This can be used to define values that are the same for each record.
                 The key has to match the column name and the value the desired record value. E.g. {'company_name' : 'Google'}
                 Will be used for any records that are being inserted. Will not be considered when comparing current to new data.
 
         Returns:
-            dataRows (int): Number of records that were provided.
-            insertedRows (int): Number of records that were inserted.
-            updatedRows (int): Number of records that were updated.
-
+            total_rows (int): Number of records that were provided.
+            inserted_rows (int): Number of records that were inserted.
+            updated_rows (int): Number of records that were updated.
         """
 
-        newData = convertToListOfDicts(data)
+        data = convert_to_dicts(data)
 
         # Assumes that all dictionaries in the list have exactly the same keys
-        allColumns = [key for key in newData[0]]
+        columns = [key for key in data[0]]
 
-        upsertTable = sqlalchemy.Table(table, self.metadata, autoload=True)
+        table = sqlalchemy.Table(table_name, self.metadata, autoload=True)
 
         # Get current records
-        if (
-            self.serverType in ("postgresql", "mysql", "sqllite")
-            and len(keyColumns) > 1
-        ):
-            # Filter records using tuple of keys (only supported by SQLAlchemy for PostgreSQL, MySQL, and SQLite)
-            currentData = (
-                self.session.query(*[upsertTable.c[col] for col in allColumns])
+        if self.server_type in ("postgresql", "mysql") and len(key_columns) > 1:
+            # Filter records using tuple of keys (only supported by SQLAlchemy for PostgreSQL and MySQL)
+            current_data = (
+                self.session.query(*[table.c[col] for col in columns])
                 .filter(
-                    sqlalchemy.tuple_(*[upsertTable.c[col] for col in keyColumns]).in_(
-                        [[row[keyCol] for keyCol in keyColumns] for row in newData]
+                    sqlalchemy.tuple_(*[table.c[col] for col in key_columns]).in_(
+                        [[row[keyCol] for keyCol in key_columns] for row in data]
                     )
                 )
                 .all()
@@ -484,103 +461,100 @@ class Connection(object):
         else:
             # Filter records using multiple IN statements (one for each key)
             # This seems to run faster for mysql as well
-            currentData = (
-                self.session.query(*[upsertTable.c[col] for col in allColumns])
+            current_data = (
+                self.session.query(*[table.c[col] for col in columns])
                 .filter(
                     *[
-                        upsertTable.c[col].in_([row[col] for row in newData])
-                        for col in keyColumns
+                        table.c[col].in_([row[col] for row in data])
+                        for col in key_columns
                     ]
                 )
                 .all()
             )
 
         # Compare current to new records
-        insertData = []
-        updateData = []
+        insert_data = []
+        update_data = []
 
-        if len(currentData) > 0:
-            currentData = convertToListOfDicts(
-                {"columns": allColumns, "rows": currentData}
-            )
+        if len(current_data) > 0:
+            current_data = convert_to_dicts({"columns": columns, "rows": current_data})
 
             # Generate dictionaries using a concatenation of the key values as unique key for each record
-            newDataDict = {
-                "_".join([str(row[key]) for key in keyColumns]): row for row in newData
+            data_dict = {
+                "_".join([str(row[key]) for key in key_columns]): row for row in data
             }
-            currentDataDict = {
-                "_".join([str(row[key]) for key in keyColumns]): row
-                for row in currentData
+            current_data_dict = {
+                "_".join([str(row[key]) for key in key_columns]): row
+                for row in current_data
             }
 
-            for key, val in newDataDict.items():
-                if key in currentDataDict:
-                    if val != currentDataDict[key]:
-                        updateData.append(val)
+            for key, val in data_dict.items():
+                if key in current_data_dict:
+                    if val != current_data_dict[key]:
+                        update_data.append(val)
                 else:
-                    if nonInsertColumns:
-                        for key in nonInsertColumns:
+                    if ignore_columns:
+                        for key in ignore_columns:
                             del val[key]
-                    insertData.append(val)
+                    insert_data.append(val)
 
         else:
-            if nonInsertColumns:
-                for row in newData:
-                    for key in nonInsertColumns:
+            if ignore_columns:
+                for row in data:
+                    for key in ignore_columns:
                         del row[key]
 
-            insertData = newData
+            insert_data = data
 
         # Insert new records
-        insertedRows = len(insertData)
-        if insertedRows > 0:
-            self.insert(table, insertData, staticValues=staticInsertValues)
+        inserted_rows = len(insert_data)
+        if inserted_rows > 0:
+            self.insert(table, insert_data, static_values=static_insert_vals)
 
         # Update existing records
-        updatedRows = len(updateData)
-        if updatedRows > 0:
-            updateColumns = list(set(allColumns) - set(keyColumns))
+        updated_rows = len(update_data)
+        if updated_rows > 0:
+            update_columns = list(set(columns) - set(key_columns))
             self.update(
                 table,
-                updateData,
-                updateColumns,
-                keyColumns,
-                staticSetValues=staticUpdateValues,
+                update_data,
+                update_columns,
+                key_columns,
+                static_values=static_update_vals,
             )
 
-        dataRows = len(data)
+        total_rows = len(data)
 
-        return dataRows, insertedRows, updatedRows
+        return total_rows, inserted_rows, updated_rows
 
 
-def sanitizeColumnNames(data, keys=None):
-    """Add b_ prefix to keys in data (list of dicts)
+def sanitize_column_names(list_of_dicts, keys=None):
+    """Add b_ prefix to keys in list_of_dicts (list of dicts)
     
     Args: 
-        data (list of dicts): List of records.
+        list_of_dicts (list of dicts): List of records.
         keys (list): Defaults to None.
     
     Returns:
-        data (list of dicts): Sanitized data
-
+        list_of_dicts (list of dicts): Sanitized list_of_dicts
     """
 
     if keys is None:
-        for row in data:
+        for row in list_of_dicts:
             for key in row:
                 row["b_" + key] = row.pop(key)
 
     else:
         keys = list(set(keys))
 
-        for row in data:
+        for row in list_of_dicts:
             for key in keys:
                 row["b_" + key] = row.pop(key)
 
-    return data
+    return list_of_dicts
 
 
-def convertToListOfDicts(data):
+def convert_to_dicts(data):
     """Converts the provided data to a list of dictionaries
     
     Args: 
@@ -588,7 +562,6 @@ def convertToListOfDicts(data):
     
     Returns:
         data (list of dicts): Provided data converted to list of dictionaries.
-
     """
 
     if isinstance(data, dict):
@@ -596,11 +569,11 @@ def convertToListOfDicts(data):
         columns = data["columns"]
         rows = data["rows"]
 
-        listOfDicts = [dict(zip(columns, values)) for values in rows]
+        list_of_dicts = [dict(zip(columns, values)) for values in rows]
 
     elif isinstance(data, list):
 
-        listOfDicts = data
+        list_of_dicts = data
 
     elif isinstance(data, pd.DataFrame):
 
@@ -612,30 +585,28 @@ def convertToListOfDicts(data):
 
         # Convert NaN to None. This is required because by default to_dict converts NaN to the string nan.
         data = data.replace({np.nan: None})
-        listOfDicts = data.to_dict("records")
+        list_of_dicts = data.to_dict("records")
 
     else:
         raise Exception(
-            "The provided type for data is not supported ({})".format(
-                type(self.connectionDetails)
-            )
+            "The provided type for data is not supported ({})".format(type(data))
         )
 
-    return listOfDicts
+    return list_of_dicts
 
 
-def extendListOfDicts(data, extendDict):
+def add_to_dicts(list_of_dicts, add_dict):
     """Add key/value set to all dictionaries in list
     
     Args: 
-        data (list of dicts): List of dictionaries.
+        list_of_dicts (list of dicts): List of dictionaries.
+        add_dict (dict): Key/ values to add to the provided list of dictionaries
     
     Returns:
-        data (list of dicts): Provided data with additional keys/values sets.
-
+        list_of_dicts (list of dicts): Provided list of dictionaries with additional key/values sets.
     """
 
-    for item in data:
-        item.update(extendDict)
+    for item in list_of_dicts:
+        item.update(add_dict)
 
-    return data
+    return list_of_dicts
