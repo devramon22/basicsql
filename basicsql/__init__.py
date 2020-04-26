@@ -509,14 +509,14 @@ class Connection(object):
         # Insert new records
         inserted_rows = len(insert_data)
         if inserted_rows > 0:
-            self.insert(table, insert_data, static_values=static_insert_vals)
+            self.insert(table_name, insert_data, static_values=static_insert_vals)
 
         # Update existing records
         updated_rows = len(update_data)
         if updated_rows > 0:
             update_columns = list(set(columns) - set(key_columns))
             self.update(
-                table,
+                table_name,
                 update_data,
                 update_columns,
                 key_columns,
