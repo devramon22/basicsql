@@ -34,6 +34,9 @@ class Connection(object):
         conn_details["db"] = conn_details.get("db", "")
         conn_details["connect_args"] = conn_details.get("connect_args", None)
 
+        # Needed for Oracle inserts and updates if the schema is different from the user schema
+        self.schema = conn_details.get("schema", None)
+
         # MySQL
         if conn_details["server_type"] == "mysql":
 
@@ -290,7 +293,9 @@ class Connection(object):
             if isinstance(val, list) is False:
                 filters[key] = [val]
 
-        table = sqlalchemy.Table(table, self.metadata, autoload=True)
+        table = sqlalchemy.Table(
+            table, self.metadata, autoload=True, schema=self.schema
+        )
 
         rows = (
             self.session.query(*[table.c[col] for col in columns])
@@ -336,7 +341,9 @@ class Connection(object):
         if static_values:
             add_to_dicts(data, static_values)
 
-        table = sqlalchemy.Table(table_name, self.metadata, autoload=True)
+        table = sqlalchemy.Table(
+            table_name, self.metadata, autoload=True, schema=self.schema
+        )
 
         if self.server_type == "oracle":
             self.session.execute(table.insert(), data)
@@ -376,7 +383,9 @@ class Connection(object):
 
         data = sanitize_column_names(data, columns + filter_columns)
 
-        table = sqlalchemy.Table(table_name, self.metadata, autoload=True)
+        table = sqlalchemy.Table(
+            table_name, self.metadata, autoload=True, schema=self.schema
+        )
 
         # Solution from stackoverflow.com/questions/48096902
         stmt = (
@@ -443,7 +452,9 @@ class Connection(object):
         # Assumes that all dictionaries in the list have exactly the same keys
         columns = [key for key in data[0]]
 
-        table = sqlalchemy.Table(table_name, self.metadata, autoload=True)
+        table = sqlalchemy.Table(
+            table_name, self.metadata, autoload=True, schema=self.schema
+        )
 
         # Get current records
         if self.server_type in ("postgresql", "mysql") and len(key_columns) > 1:
