@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "basicsql"
 version = "0.1.4"
-description = ""
+description = "This is a small package intended to help with basic operations such as select, insert, update, and upsert as well as executing raw SQL queries for different database types."
 authors = ["Ramon Brandt <devramon22@gmail.com>"]
 license = "MIT"
 readme = "README.md"
