@@ -33,6 +33,7 @@ class Connection(object):
 
         conn_details["db"] = conn_details.get("db", "")
         conn_details["connect_args"] = conn_details.get("connect_args", None)
+        engine_kwargs = {}
 
         # Needed for Oracle inserts and updates if the schema is different from the user schema
         self.schema = conn_details.get("schema", None)
@@ -88,6 +89,16 @@ class Connection(object):
 
             self.server_type = "oracle"
 
+        # Oracle AWD
+        elif conn_details["server_type"] == "oracle-adw":
+
+            os.environ["TNS_ADMIN"] = conn_details["wallet_path"]
+
+            conn_string = "oracle://{user}:{pw}@{service}".format(**conn_details)
+            engine_kwargs = {"max_identifier_length": 128}
+
+            self.server_type = "oracle"
+
         else:
             raise Exception(
                 "The server_type '{server_type}' is not supported".format(
@@ -97,10 +108,10 @@ class Connection(object):
 
         if conn_details["connect_args"]:
             engine = sqlalchemy.create_engine(
-                conn_string, connect_args=conn_details["connect_args"]
+                conn_string, connect_args=conn_details["connect_args"], **engine_kwargs
             )
         else:
-            engine = sqlalchemy.create_engine(conn_string)
+            engine = sqlalchemy.create_engine(conn_string, **engine_kwargs)
 
         self.session = sqlalchemy.orm.session.Session(bind=engine)
         self.metadata = sqlalchemy.MetaData(bind=engine)
